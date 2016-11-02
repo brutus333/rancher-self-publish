@@ -4,6 +4,7 @@ import simpleyaml
 import urllib2
 import json
 import base64
+import sys
 
 
 # Metadata client
@@ -21,6 +22,7 @@ def get_current_api_entry(api_endpoint,access_key,secret_key,payload):
     headers = {
         'User-Agent': "selfpublish-rancher/0.1",
         'Accept': 'application/json',
+        'Content-Type': 'application/json',
         'Authorization': 'Basic '+base64.standard_b64encode(access_key + ':' + secret_key).encode('latin1').strip()
     }
     print "Accessing: %s" % api_endpoint
@@ -38,7 +40,7 @@ def get_publishing_config(stack):
     return list(map(compose_config, filter(should_be_published_service, get_current_metadata_entry('services'))))
 
 def compose_config(service,lbservice,lbport):
-    return {
+    return { 
                 lbservice:  {
                    'external_links': [ '%s/%s:%s' % (service['stack_name'],service['service_name'],service['service_name']) ],
                    'labels': [ 'io.rancher.loadbalancer.target.%s/%s: %s' % (service['stack_name'],service['service_name'],port) ]
@@ -47,12 +49,12 @@ def compose_config(service,lbservice,lbport):
 
 # functions returning data about the load balancer stack
 
-def get_current_uuids():
+def get_mystack_info():
     selfmetadata = get_current_metadata_entry('self')
-    return { 'stack_uuid': selfmetadata['stack']['uuid'], 'env_uuid': selfmetadata['stack']['environment_uuid'] }
+    return { 'stack': selfmetadata['stack']['name'],'stack_uuid': selfmetadata['stack']['uuid'], 'env_uuid': selfmetadata['stack']['environment_uuid'] }
 
 
-def get_current_environment(rancher_api_url,access_key,secret_key,uuid_dict):
+def get_current_environment(rancher_api_url,access_key,secret_key,my_dict):
     """ Get the environment object from the API
         From some unknown reason, we have different names for entities in Rancher metadata/Rancher UI/Rancher API
         -----------------------------------------
@@ -62,9 +64,9 @@ def get_current_environment(rancher_api_url,access_key,secret_key,uuid_dict):
         |environment     |environment|project    |
         |service         |service    |service    |
     """
-    proj_result = get_current_api_entry(rancher_api_url+'/projects/?uuid=%s' % uuid_dict['env_uuid'],access_key,secret_key,None)
+    proj_result = get_current_api_entry(rancher_api_url+'/projects/?uuid=%s' % my_dict['env_uuid'],access_key,secret_key,None)
     environments_link = proj_result['data'][0]['links']['environments']
-    env_result = get_current_api_entry(environments_link+'/?uuid=%s' % uuid_dict['stack_uuid'],access_key,secret_key,None)
+    env_result = get_current_api_entry(environments_link+'/?uuid=%s' % my_dict['stack_uuid'],access_key,secret_key,None)
     return env_result
 
 def get_current_lb_links(access_key,secret_key,env_result):
@@ -76,7 +78,7 @@ def get_current_lb_links(access_key,secret_key,env_result):
         return full_config[0]['links']
     else:
         raise Exception("dockercompose does not have the right format or no load balancer present in configuration!")
-
+    
 def get_load_balancer(access_key,secret_key,env_result):
     service_result = get_current_api_entry(env_result['data'][0]['links']['services'],access_key,secret_key,None)
     lbservice_link = [ x['links']['self'] for x in service_result['data'] if x['type'] == 'loadBalancerService' ]
@@ -87,19 +89,32 @@ def get_load_balancer(access_key,secret_key,env_result):
     else:
         raise Exception("No load balancer found in stack!")
     return lbservice_result
-
+        
 
 def main():
     rancher_api_url=os.environ['CATTLE_URL']
     access_key=os.environ['CATTLE_ACCESS_KEY']
     secret_key=os.environ['CATTLE_SECRET_KEY']
-    uuid_dict=get_current_uuids()
-    env = get_current_environment(rancher_api_url,access_key,secret_key,uuid_dict)
+    bigip_address = os.environ['BIGIP_ADDRESS']
+    bigip_user = os.environ['BIGIP_USERNAME']
+    bigip_password = os.environ['BIGIP_PASSWORD']
+    myinfo_dict=get_mystack_info()
+    mystack = myinfo_dict['stack']
+    env = get_current_environment(rancher_api_url,access_key,secret_key,myinfo_dict)
+    # Finding the link to the loadbalancer add service
     lb_addservice_link = get_load_balancer(access_key,secret_key,env)['actions']['addservicelink']
+    # Finding services that needs to be published
+    project = get_current_api_entry(rancher_api_url+'/projects/?uuid=%s' % myinfo_dict['env_uuid'],access_key,secret_key,None)
+    selected_services = [ (get_current_api_entry(project['data'][0]['links']['services']+'/?uuid='+service['uuid'],access_key,secret_key,None),service['name'],service['stack_name']) for service in get_current_metadata_entry('services') if should_be_published_service(service,'com.rancher.published',mystack) ]
+    [ add_loadbalancer_entry(lb_addservice_link, service, access_key, secret_key) for service in selected_services ]
 
-
-
+def add_loadbalancer_entry(lb_service_link, service, access_key, secret_key):
+    payload={ 'serviceLink': {} }
+    payload['serviceLink'].update({ 'serviceId': service[0]['data'][0]['id'], 'ports': [ '%s.%s=80' % (service[1],service[2]) ]})
+    try:
+        get_current_api_entry(lb_service_link,access_key,secret_key,json.dumps(payload))
+    except urllib2.HTTPError, e:
+        print "Encountered HTTP Error: %s" % e
 
 if __name__ == "__main__":
     main()
-
