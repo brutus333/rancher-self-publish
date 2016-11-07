@@ -27,6 +27,71 @@ def edit_datagroup_list(dgc,dgl,mdv):
         print e
         sys.exit(3)
 
+# BigIP F5 route domain functions
+def get_rd_id(rd,description):
+    return  [ rd.get_list()[i] for i,x in enumerate(rd.get_description(rd.get_list())) if x==description ][0].split("/")[2]
+
+# BigIP F5 pool & pool members manipulation
+
+def pool_exists(b,pool,description):
+    return [ True for x in pool.get_list() if x.split("/")[2]==description ]
+
+def find_pool_ids(pool,partition,prefix):
+    reg = re.compile('(/%s/%s)([0-9]*).*' % (partition,prefix))
+    result = [ int(reg.match(x).groups()[1]) for x in pool.get_list() if reg.match(x) and reg.match(x).groups()[1] ]
+    if not result:
+        result = [ 0 for x in pool.get_list() if reg.match(x) ]
+    return result
+    
+def find_pool_by_metadata(pool,partition,prefix,**kwargs):
+    reg = re.compile('(/%s/%s)([0-9]*).*' % (partition,prefix))
+    keys=kwargs.keys()
+    keys.sort()
+    sortedvalues=[ kwargs[key] for key in keys ]
+    return [ y for y,z in [ [x,pool.get_metadata([x])] for x in pool.get_list() if reg.match(x) ] if pool.get_metadata_value([y],[[z]])[0]==sortedvalues]
+
+def create_pool(pool,nodeaddress,description,nodelist,addresslist,portlist,rdid,**kwargs):
+    try:
+        nodeaddress.create([nodelist],[address+'%'+rdid for address in addresslist],[0])
+    except Exception, e:
+        print e
+    memberslist = [{ 'port': portlist[nodelist.index(x)], 'address': x } for x in nodelist ]
+    print memberslist
+    keys=kwargs.keys()
+    keys.sort()
+    sortedvalues=[ kwargs[key] for key in keys ]
+    try:
+        pool.create_v2([description],['LB_METHOD_ROUND_ROBIN'],[memberslist])
+    except Exception,e:
+        print "Cannot create pool due to error: %s" % e
+        sys.exit(3)
+    monitorassoc =  {'monitor_templates':['/Common/generic_http_monitor'], 'type': 'MONITOR_RULE_TYPE_SINGLE', 'quorum': 0}
+    try:
+        pool.set_monitor_association([{'pool_name': description, 'monitor_rule': monitorassoc}])
+    except Exception,e:
+        print "Cannot enable pool monitoring due to error: %s" % e
+    pool.add_metadata([description],[keys],[sortedvalues])
+
+def add_member(pool,nodeaddress,description,node,address,port,rdid):
+    #TO DO: to verify if member is already in the pool
+    try:
+        nodeaddress.create([node],[address+'%'+rdid],[0])
+    except Exception, e:
+        print e
+    members=[{'port': port, 'address': node}]
+    try:
+        pool.add_member_v2([description], [members])
+    except Exception, e:
+        print e
+    
+    try:
+        pool.set_member_description([description],[members], [[APP_VERSION]])
+    except Exception, e:
+        print e
+
+def pool_members_list(pool,description):
+    return pool.get_member_v2([description])
+
 # Rancher Metadata client
 def get_current_metadata_entry(entry):
     headers = {
@@ -58,7 +123,7 @@ def should_be_published_service(service,publish_label_prefix,stack):
 
 # Function returning hostid<->hostname correspondence
 def get_host_hostid():
-    return [ { x['hostId']: x['hostname'] } for x in get_current_metadata_entry('hosts') ]
+    return dict([ (int(x['hostId']),x['hostname']) for x in get_current_metadata_entry('hosts') ])
 
 # functions returning data about the load balancer stack
 
@@ -116,6 +181,7 @@ def main():
         bigip_user = os.environ['BIGIP_USERNAME']
         bigip_password = os.environ['BIGIP_PASSWORD']
         bigip_partition = os.environ['BIGIP_PARTITION']
+        bigip_routedomain = os.environ['BIGIP_ROUTEDOMAIN']
         bigip_virtualserver = os.environ['BIGIP_VIRTUALSERVER']
         service_port = os.environ['CONTAINER_DEFAULT_PORT']
     except KeyError,e:
@@ -127,6 +193,9 @@ def main():
         password = bigip_password,
         )
     datagroupclass = b.LocalLB.Class
+    pool = b.LocalLB.Pool
+    nodeaddress = b.LocalLB.NodeAddressV2
+    routedomain = b.Networking.RouteDomainV2
     datagrouplist = find_datagroup_list(datagroupclass,bigip_partition,'ProxyPass%s' % bigip_virtualserver)    
     if not datagrouplist:
         print "Can't find datagroup list"
@@ -140,16 +209,33 @@ def main():
     lb = get_load_balancer(access_key,secret_key,env)
     lb_addservice_link = lb['actions']['addservicelink']
     hostid2host = get_host_hostid()
-    print lb
-    lb_public_endpoints = [ (x['ipaddress'],x['port'],hostid2host[x['hostId']]) for x in lb.publicEndpoints ]
-    print lb_public_endpoints
-
+    lb_public_endpoints = [ (x['ipAddress'],x['port'],hostid2host[int(x['hostId'])]) for x in lb['publicEndpoints'] ]
+    (addresslist,portlist,nodelist) = map(list, zip(*lb_public_endpoints))
 
     # Finding services that needs to be published
     project = get_current_api_entry(rancher_api_url+'/projects/?uuid=%s' % myinfo_dict['env_uuid'],access_key,secret_key,None)
+#    print json.dumps(project,sort_keys=True,indent=4, separators=(',', ': '))
     selected_services = [ (get_current_api_entry(project['data'][0]['links']['services']+'/?uuid='+service['uuid'],access_key,secret_key,None),service['name'],service['stack_name'])\
                            for service in get_current_metadata_entry('services') if should_be_published_service(service,'com.rancher.published',mystack) ]
     [ add_loadbalancer_entry(lb_addservice_link, service, access_key, secret_key) for service in selected_services ]
+
+# If everything went smooth in Rancher LB let's move to BigIP
+
+# Let's create the pool in BigIP
+    b.System.Session.set_active_folder("/Common")
+    try:
+        rdid = get_rd_id(routedomain,bigip_routedomain)
+    except Exception, e:
+        print e
+        sys.exit(3)
+    description = 'rancher_'+project['data'][0]['name'].replace(' ','_')+'_pool'
+
+    b.System.Session.set_active_folder("/"+bigip_partition)
+    if pool_exists(b,pool,description):
+        print pool_members_list(pool,description)
+        #add_member(pool,nodeaddress,pool_list[0],HOSTNAME,ADDRESS,PORT,rdid)
+    else:
+        create_pool(pool,nodeaddress,description,nodelist,addresslist,portlist,rdid)
 
 def add_loadbalancer_entry(lb_service_link, service, access_key, secret_key):
     payload={ 'serviceLink': {} }
