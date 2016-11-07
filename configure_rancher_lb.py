@@ -5,9 +5,29 @@ import urllib2
 import json
 import base64
 import sys
+import bigsuds
 
+# BigIP F5 datagroup list manipulation
+def find_datagroup_list(dgc,partition,description):
+    result = dgc.get_string_class(['/%s/%s' % (partition,description)])
+    if not result[0]['members']:
+        return False
+    else:
+        return result    
 
-# Metadata client
+def edit_datagroup_list(dgc,dgl,mdv):
+    try:
+        dgc.add_string_class_member(dgl)
+    except Exception, e:
+        print e
+        sys.exit(3)
+    try:
+        dgc.set_string_class_member_data_value(dgl,mdv)
+    except Exception,e:
+        print e
+        sys.exit(3)
+
+# Rancher Metadata client
 def get_current_metadata_entry(entry):
     headers = {
         'User-Agent': "selfpublish-rancher/0.1",
@@ -36,16 +56,9 @@ def should_be_published_service(service,publish_label_prefix,stack):
     publish_label_stack = publish_label_prefix+'.lbstack'
     return 'labels' in service and publish_label_stack in service['labels'] and service['labels'][publish_label_stack] == stack
 
-def get_publishing_config(stack):
-    return list(map(compose_config, filter(should_be_published_service, get_current_metadata_entry('services'))))
-
-def compose_config(service,lbservice,lbport):
-    return { 
-                lbservice:  {
-                   'external_links': [ '%s/%s:%s' % (service['stack_name'],service['service_name'],service['service_name']) ],
-                   'labels': [ 'io.rancher.loadbalancer.target.%s/%s: %s' % (service['stack_name'],service['service_name'],port) ]
-                }
-           }
+# Function returning hostid<->hostname correspondence
+def get_host_hostid():
+    return [ { x['hostId']: x['hostname'] } for x in get_current_metadata_entry('hosts') ]
 
 # functions returning data about the load balancer stack
 
@@ -92,20 +105,50 @@ def get_load_balancer(access_key,secret_key,env_result):
         
 
 def main():
-    rancher_api_url=os.environ['CATTLE_URL']
-    access_key=os.environ['CATTLE_ACCESS_KEY']
-    secret_key=os.environ['CATTLE_SECRET_KEY']
-    bigip_address = os.environ['BIGIP_ADDRESS']
-    bigip_user = os.environ['BIGIP_USERNAME']
-    bigip_password = os.environ['BIGIP_PASSWORD']
+    try:
+        rancher_api_url=os.environ['CATTLE_URL']
+        access_key=os.environ['CATTLE_ACCESS_KEY']
+        secret_key=os.environ['CATTLE_SECRET_KEY']
+### Awaiting Secrets Bridge integration....
+### The bigip credentials will be retrieved from Vault if vault is enabled and from env variables otherwise
+### We should add validations here
+        bigip_address = os.environ['BIGIP_ADDRESS']
+        bigip_user = os.environ['BIGIP_USERNAME']
+        bigip_password = os.environ['BIGIP_PASSWORD']
+        bigip_partition = os.environ['BIGIP_PARTITION']
+        bigip_virtualserver = os.environ['BIGIP_VIRTUALSERVER']
+        service_port = os.environ['CONTAINER_DEFAULT_PORT']
+    except KeyError,e:
+        print "At least one env variable is not set, for the moment the one missing is: %s; exiting..." % e
+        sys.exit(3)
+    b = bigsuds.BIGIP(
+        hostname = bigip_address,
+        username = bigip_user,
+        password = bigip_password,
+        )
+    datagroupclass = b.LocalLB.Class
+    datagrouplist = find_datagroup_list(datagroupclass,bigip_partition,'ProxyPass%s' % bigip_virtualserver)    
+    if not datagrouplist:
+        print "Can't find datagroup list"
+        sys.exit(3)
+
+##  Rancher stuff
     myinfo_dict=get_mystack_info()
     mystack = myinfo_dict['stack']
     env = get_current_environment(rancher_api_url,access_key,secret_key,myinfo_dict)
     # Finding the link to the loadbalancer add service
-    lb_addservice_link = get_load_balancer(access_key,secret_key,env)['actions']['addservicelink']
+    lb = get_load_balancer(access_key,secret_key,env)
+    lb_addservice_link = lb['actions']['addservicelink']
+    hostid2host = get_host_hostid()
+    print lb
+    lb_public_endpoints = [ (x['ipaddress'],x['port'],hostid2host[x['hostId']]) for x in lb.publicEndpoints ]
+    print lb_public_endpoints
+
+
     # Finding services that needs to be published
     project = get_current_api_entry(rancher_api_url+'/projects/?uuid=%s' % myinfo_dict['env_uuid'],access_key,secret_key,None)
-    selected_services = [ (get_current_api_entry(project['data'][0]['links']['services']+'/?uuid='+service['uuid'],access_key,secret_key,None),service['name'],service['stack_name']) for service in get_current_metadata_entry('services') if should_be_published_service(service,'com.rancher.published',mystack) ]
+    selected_services = [ (get_current_api_entry(project['data'][0]['links']['services']+'/?uuid='+service['uuid'],access_key,secret_key,None),service['name'],service['stack_name'])\
+                           for service in get_current_metadata_entry('services') if should_be_published_service(service,'com.rancher.published',mystack) ]
     [ add_loadbalancer_entry(lb_addservice_link, service, access_key, secret_key) for service in selected_services ]
 
 def add_loadbalancer_entry(lb_service_link, service, access_key, secret_key):
