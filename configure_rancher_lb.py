@@ -6,6 +6,8 @@ import json
 import base64
 import sys
 import bigsuds
+import logging
+import time
 
 # BigIP F5 datagroup list manipulation
 def find_datagroup_list(dgc,partition,description):
@@ -52,11 +54,11 @@ def find_pool_by_metadata(pool,partition,prefix,**kwargs):
 
 def create_pool(pool,nodeaddress,description,nodelist,addresslist,portlist,rdid,**kwargs):
     try:
-        nodeaddress.create([nodelist],[address+'%'+rdid for address in addresslist],[0])
+        addrrdidlist = [address+'%'+rdid for address in addresslist]
+        nodeaddress.create(nodelist,addrrdidlist,[0]*len(nodelist))
     except Exception, e:
         print e
     memberslist = [{ 'port': portlist[nodelist.index(x)], 'address': x } for x in nodelist ]
-    print memberslist
     keys=kwargs.keys()
     keys.sort()
     sortedvalues=[ kwargs[key] for key in keys ]
@@ -72,23 +74,18 @@ def create_pool(pool,nodeaddress,description,nodelist,addresslist,portlist,rdid,
         print "Cannot enable pool monitoring due to error: %s" % e
     pool.add_metadata([description],[keys],[sortedvalues])
 
-def add_member(pool,nodeaddress,description,node,address,port,rdid):
-    #TO DO: to verify if member is already in the pool
+def add_member(pool,nodeaddress,description,nodelist,addresslist,portlist,rdid):
     try:
-        nodeaddress.create([node],[address+'%'+rdid],[0])
+        addrrdidlist = [address+'%'+rdid for address in addresslist]
+        nodeaddress.create(nodelist,addrrdidlist,[0]*len(nodelist))
     except Exception, e:
         print e
-    members=[{'port': port, 'address': node}]
+    memberslist = [{ 'port': portlist[nodelist.index(x)], 'address': x } for x in nodelist ]
     try:
-        pool.add_member_v2([description], [members])
+        pool.add_member_v2([description], [memberslist])
     except Exception, e:
         print e
     
-    try:
-        pool.set_member_description([description],[members], [[APP_VERSION]])
-    except Exception, e:
-        print e
-
 def pool_members_list(pool,description):
     return pool.get_member_v2([description])
 
@@ -183,10 +180,13 @@ def main():
         bigip_partition = os.environ['BIGIP_PARTITION']
         bigip_routedomain = os.environ['BIGIP_ROUTEDOMAIN']
         bigip_virtualserver = os.environ['BIGIP_VIRTUALSERVER']
+        bigip_pool_prefix = os.environ['BIGIP_POOL_PREFIX']
         service_port = os.environ['CONTAINER_DEFAULT_PORT']
     except KeyError,e:
         print "At least one env variable is not set, for the moment the one missing is: %s; exiting..." % e
+        time.sleep(30)
         sys.exit(3)
+    logging.basicConfig(level=logging.INFO)
     b = bigsuds.BIGIP(
         hostname = bigip_address,
         username = bigip_user,
@@ -196,10 +196,7 @@ def main():
     pool = b.LocalLB.Pool
     nodeaddress = b.LocalLB.NodeAddressV2
     routedomain = b.Networking.RouteDomainV2
-    datagrouplist = find_datagroup_list(datagroupclass,bigip_partition,'ProxyPass%s' % bigip_virtualserver)    
-    if not datagrouplist:
-        print "Can't find datagroup list"
-        sys.exit(3)
+    #logging.getLogger('suds.client').setLevel(logging.DEBUG)
 
 ##  Rancher stuff
     myinfo_dict=get_mystack_info()
@@ -228,14 +225,31 @@ def main():
     except Exception, e:
         print e
         sys.exit(3)
-    description = 'rancher_'+project['data'][0]['name'].replace(' ','_')+'_pool'
-
+    description = bigip_pool_prefix+'_'+project['data'][0]['name'].replace(' ','_')+'_pool'
     b.System.Session.set_active_folder("/"+bigip_partition)
     if pool_exists(b,pool,description):
-        print pool_members_list(pool,description)
-        #add_member(pool,nodeaddress,pool_list[0],HOSTNAME,ADDRESS,PORT,rdid)
+        member_list = pool_members_list(pool,description)[0]
+# We presume that one node will never be included in the same pool with two TCP ports
+        not_added_yet = set(nodelist) - set([ x['address'].split("/")[2] for x in member_list ])
+        if not_added_yet:
+            not_added_yet_index = [ nodelist.index(x) for x in not_added_yet ]
+            addresslist = [ addresslist[x] for x in not_added_yet_index ]
+            portlist = [ portlist[x] for x in not_added_yet_index ]
+            nodelist = [ nodelist[x] for x in not_added_yet_index ]
+            add_member(pool,nodeaddress,description,nodelist,addresslist,portlist,rdid)
     else:
         create_pool(pool,nodeaddress,description,nodelist,addresslist,portlist,rdid)
+    # Look after datagroup list
+    
+    datagrouplist = find_datagroup_list(datagroupclass,bigip_partition,'ProxyPass%s' % bigip_virtualserver)    
+
+    if not datagrouplist:
+        print "Can't find datagroup list"
+        sys.exit(3)
+    memberdatavalue = [['%s.%s/ %s' % (service[1],service[2],description) for service in selected_services]]
+    datagrouplist[0]['members'] = [ "/"+service[2]+'_'+service[1] for service in selected_services]
+    
+    edit_datagroup_list(datagroupclass,datagrouplist,memberdatavalue)
 
 def add_loadbalancer_entry(lb_service_link, service, access_key, secret_key):
     payload={ 'serviceLink': {} }
