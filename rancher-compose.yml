@@ -31,7 +31,7 @@ self-publish:
         BigIP management IP address or DNS name
       type: "string"
       required: true
-    - variable: bigip_partition"
+    - variable: bigip_partition
       label: "BigIP default partition"
       description: |
         BigIP partition where all resources will be created and managed
@@ -51,7 +51,7 @@ self-publish:
         BigIP routing domain used to connect to the Rancher load balancers
       type: "string"
       required: true
-    - variable: bigip_virtual server
+    - variable: bigip_virtualserver
       label: "BigIP default virtual server"
       description: |
         BigIP virtual server used for service publishing (should exists and have ProxyPass irule activated)

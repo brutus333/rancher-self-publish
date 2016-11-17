@@ -14,10 +14,10 @@ self-publish:
     BIGIP_ROUTEDOMAIN: ${bigip_routedomain}
     BIGIP_VIRTUALSERVER: ${bigip_virtualserver}
     BIGIP_POOL_PREFIX: ${bigip_pool_prefix}
-    CONTAINER_DEFAULT_PORT: ${container_default_port}
+    CONTAINER_DEFAULT_PORT: ${service_port}
 load-balancer:
   ports:
-  - ${load_balancer_port}
+  - ${load_balancer_port}:${service_port}
   labels:
     io.rancher.scheduler.global: 'true'
     io.rancher.loadbalancer.target.self-publish: self

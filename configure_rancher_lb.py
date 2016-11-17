@@ -174,7 +174,7 @@ def get_load_balancer(access_key,secret_key,env_result):
 def exit_with_error(msg,errcode):
    print msg
 ## Needed in Rancher to see the error in UI console logs
-   sleep 30
+   time.sleep(30)
    sys.exit(errcode)
 
 def main():
