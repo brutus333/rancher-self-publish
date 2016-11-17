@@ -1,0 +1,69 @@
+load-balancer:
+  load_balancer_config:
+    haproxy_config: {}
+  health_check:
+    port: 42
+    interval: 2000
+    unhealthy_threshold: 3
+    healthy_threshold: 2
+    response_timeout: 2000
+self-publish:
+  scale: 1
+  metadata:
+    bigip:
+      username: "${bigip_username}"
+      password: "${bigip_password}"
+.catalog:
+  name: "SelfPublish"
+  description: "Auto-publishing of services in BigIP"
+  version: "0.1"
+  uuid: selfpublish-01
+  questions:
+    - variable: load_balancer_port
+      label: "Load balancer listening port"
+      description: |
+        The port where the stacks' load balancer is listening to
+      type: "int"
+      required: true
+    - variable: bigip_address
+      label: "BigIP Address"
+      description: |
+        BigIP management IP address or DNS name
+      type: "string"
+      required: true
+    - variable: bigip_partition"
+      label: "BigIP default partition"
+      description: |
+        BigIP partition where all resources will be created and managed
+      type: "string"
+      required: true
+    - variable: bigip_username
+      label: "BigIP username"
+      type: "string"
+      required: true
+    - variable: bigip_password
+      label: "BigIP password"
+      type: "password"
+      required: true
+    - variable: bigip_routedomain
+      label: "BigIP default routing domain"
+      description: |
+        BigIP routing domain used to connect to the Rancher load balancers
+      type: "string"
+      required: true
+    - variable: bigip_virtual server
+      label: "BigIP default virtual server"
+      description: |
+        BigIP virtual server used for service publishing (should exists and have ProxyPass irule activated)
+      type: "string"
+      required: true
+    - variable: bigip_pool_prefix
+      label: "BigIP default pool prefix"
+      type: "string"
+      required: true
+    - variable: service_port
+      label: "Default service port (in container)"
+      description: |
+        Default port where service is listening
+      type: "int"
+      required: true
