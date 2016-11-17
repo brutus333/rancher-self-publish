@@ -7,7 +7,7 @@ This small program tries to automate the setup of Rancher load balancers and Big
 
 The following schema explains a bit the architecture:
 
-![Architecture image](https://raw.githubusercontent.com/brutus333/rancher-self-publish/master/global_lb.svg)
+![Architecture image](https://cdn.rawgit.com/brutus333/rancher-self-publish/master/global_lb.svg)
 
 The program is meant to be called from the Rancher catalog since sensitive configuration options like BigIP username and password are taken from Rancher metadata service pushed via catalog integration.
 
