@@ -95,8 +95,11 @@ def get_current_metadata_entry(entry):
         'User-Agent': "selfpublish-rancher/0.1",
         'Accept': 'application/json'
     }
-    req = urllib2.Request('http://rancher-metadata.rancher.internal/latest/%s' % entry, headers=headers)
-    response = urllib2.urlopen(req).read()
+    try:
+        req = urllib2.Request('http://rancher-metadata.rancher.internal/latest/%s' % entry, headers=headers)
+        response = urllib2.urlopen(req).read()
+    except Exception,e:
+        exit_with_error("Error connecting to metadata service: %s" % e, 7)
     return json.loads(response.decode('utf8 '))
 # API client
 
@@ -108,8 +111,11 @@ def get_current_api_entry(api_endpoint,access_key,secret_key,payload):
         'Authorization': 'Basic '+base64.standard_b64encode(access_key + ':' + secret_key).encode('latin1').strip()
     }
     print "Accessing: %s" % api_endpoint
-    request = urllib2.Request(api_endpoint,payload,headers)
-    response = urllib2.urlopen(request).read()
+    try:
+        request = urllib2.Request(api_endpoint,payload,headers)
+        response = urllib2.urlopen(request).read()
+    except Exception,e:
+        exit_with_error("Error connecting to Rancher API: %s" % e, 7)
     return json.loads(response.decode('utf8 '))
 
 # functions returning data about services in other stacks needing publishing
@@ -165,37 +171,46 @@ def get_load_balancer(access_key,secret_key,env_result):
         raise Exception("No load balancer found in stack!")
     return lbservice_result
         
+def exit_with_error(msg,errcode):
+   print msg
+## Needed in Rancher to see the error in UI console logs
+   sleep 30
+   sys.exit(errcode)
 
 def main():
     try:
         rancher_api_url=os.environ['CATTLE_URL']
         access_key=os.environ['CATTLE_ACCESS_KEY']
         secret_key=os.environ['CATTLE_SECRET_KEY']
-### Awaiting Secrets Bridge integration....
-### The bigip credentials will be retrieved from Vault if vault is enabled and from env variables otherwise
-### We should add validations here
+### The bigip credentials will be retrieved from Rancher metadata
+### We validate here all other passed environment variables
         bigip_address = os.environ['BIGIP_ADDRESS']
-        bigip_user = os.environ['BIGIP_USERNAME']
-        bigip_password = os.environ['BIGIP_PASSWORD']
         bigip_partition = os.environ['BIGIP_PARTITION']
         bigip_routedomain = os.environ['BIGIP_ROUTEDOMAIN']
         bigip_virtualserver = os.environ['BIGIP_VIRTUALSERVER']
         bigip_pool_prefix = os.environ['BIGIP_POOL_PREFIX']
         service_port = os.environ['CONTAINER_DEFAULT_PORT']
     except KeyError,e:
-        print "At least one env variable is not set, for the moment the one missing is: %s; exiting..." % e
-        time.sleep(30)
-        sys.exit(3)
+        exit_with_error("At least one env variable is not set, for the moment the one missing is: %s; exiting..." % e, 3)
+    self_metadata=get_current_metadata_entry('self/service/metadata')
+    if not 'bigip' in self_metadata.keys():
+        exit_with_error("Could not find BIGIP metadata entries",5)
+    bigip_user=self_metadata['bigip']['username']
+    bigip_password=self_metadata['bigip']['password']
+
     logging.basicConfig(level=logging.INFO)
     b = bigsuds.BIGIP(
         hostname = bigip_address,
         username = bigip_user,
         password = bigip_password,
         )
-    datagroupclass = b.LocalLB.Class
-    pool = b.LocalLB.Pool
-    nodeaddress = b.LocalLB.NodeAddressV2
-    routedomain = b.Networking.RouteDomainV2
+    try:
+        datagroupclass = b.LocalLB.Class
+        pool = b.LocalLB.Pool
+        nodeaddress = b.LocalLB.NodeAddressV2
+        routedomain = b.Networking.RouteDomainV2
+    except bigsuds.ConnectionError,e:
+        print "Error connecting to BigIP: %s" % e
     #logging.getLogger('suds.client').setLevel(logging.DEBUG)
 
 ##  Rancher stuff
