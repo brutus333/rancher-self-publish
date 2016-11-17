@@ -12,4 +12,4 @@ RUN sed -i -e 's/ash/bash/g' /etc/passwd
 
 ADD configure_rancher_lb.py /configure_rancher_lb.py
 
-ENTRYPOINT /bin/bash
+ENTRYPOINT /configure_rancher_lb.py

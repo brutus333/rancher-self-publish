@@ -18,13 +18,17 @@ def find_datagroup_list(dgc,partition,description):
         return result    
 
 def edit_datagroup_list(dgc,dgl,mdv):
+    initial_dgl=dgl
+    dgl_found = dgc.find_string_class_member(dgl)
+    members = dgl[0]['members']
+    dgl[0]['members'] = [ x for x in members if not dgl_found[0][members.index(x)] ]
     try:
         dgc.add_string_class_member(dgl)
     except Exception, e:
         print e
         sys.exit(3)
     try:
-        dgc.set_string_class_member_data_value(dgl,mdv)
+        dgc.set_string_class_member_data_value(initial_dgl,mdv)
     except Exception,e:
         print e
         sys.exit(3)
@@ -229,7 +233,7 @@ def main():
 #    print json.dumps(project,sort_keys=True,indent=4, separators=(',', ': '))
     selected_services = [ (get_current_api_entry(project['data'][0]['links']['services']+'/?uuid='+service['uuid'],access_key,secret_key,None),service['name'],service['stack_name'])\
                            for service in get_current_metadata_entry('services') if should_be_published_service(service,'com.rancher.published',mystack) ]
-    [ add_loadbalancer_entry(lb_addservice_link, service, access_key, secret_key) for service in selected_services ]
+    [ add_loadbalancer_entry(lb_addservice_link, service, access_key, secret_key,service_port) for service in selected_services ]
 
 # If everything went smooth in Rancher LB let's move to BigIP
 
@@ -266,13 +270,15 @@ def main():
     
     edit_datagroup_list(datagroupclass,datagrouplist,memberdatavalue)
 
-def add_loadbalancer_entry(lb_service_link, service, access_key, secret_key):
+def add_loadbalancer_entry(lb_service_link, service, access_key, secret_key,service_port):
     payload={ 'serviceLink': {} }
-    payload['serviceLink'].update({ 'serviceId': service[0]['data'][0]['id'], 'ports': [ '%s.%s=80' % (service[1],service[2]) ]})
+    payload['serviceLink'].update({ 'serviceId': service[0]['data'][0]['id'], 'ports': [ '%s.%s=%s' % (service[1],service[2],service_port) ]})
     try:
         get_current_api_entry(lb_service_link,access_key,secret_key,json.dumps(payload))
     except urllib2.HTTPError, e:
         print "Encountered HTTP Error: %s" % e
 
 if __name__ == "__main__":
-    main()
+    while True:
+        main()
+        time.sleep(180)
